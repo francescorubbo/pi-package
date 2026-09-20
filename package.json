@@ -9,13 +9,21 @@
     ]
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepare": "husky"
   },
   "dependencies": {
     "typebox": "latest"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "latest",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.5.1",
     "typescript": "^5.0.0"
+  },
+  "lint-staged": {
+    "extensions/*.ts": [
+      "npm run typecheck"
+    ]
   }
 }
