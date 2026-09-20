@@ -1,0 +1,21 @@
+{
+  "name": "pi-package",
+  "version": "0.1.0",
+  "description": "Custom extensions for pi-coding-agent",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./extensions/block-shell-commands.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "typebox": "latest"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "latest",
+    "typescript": "^5.0.0"
+  }
+}
