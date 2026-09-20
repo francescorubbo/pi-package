@@ -14,10 +14,12 @@
     "prepare": "husky || true"
   },
   "dependencies": {
+    "shell-quote": "^1.10.0",
     "typebox": "latest"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "latest",
+    "@types/shell-quote": "^1.7.5",
     "husky": "^9.1.7",
     "typescript": "^5.0.0"
   }

@@ -1,6 +1,7 @@
 import { ExtensionAPI, ExtensionContext, ToolCallEvent, isToolCallEventType, CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { parse } from "shell-quote";
 
 class BlockShellCommands {
     private projectAllowlist: Set<string> = new Set();
@@ -45,31 +46,60 @@ class BlockShellCommands {
         }
     }
 
+    private getCommands(command: string): string[] {
+        const tokens = parse(command);
+        const commands: string[] = [];
+
+        for (let i = 0; i < tokens.length; i++) {
+            const token = tokens[i];
+            
+            // shell-quote returns objects for operators like { op: '|' }
+            const isOp = typeof token !== 'string';
+            
+            // A token is a command if:
+            // 1. It's the first token
+            // 2. The previous token was an operator (like |, &&, ;, ||)
+            if (!isOp) {
+                if (i === 0) {
+                    commands.push(token);
+                } else {
+                    const prev = tokens[i - 1];
+                    if (typeof prev !== 'string') {
+                        commands.push(token);
+                    }
+                }
+            }
+        }
+        return commands;
+    }
+
     public async shouldBlock(command: string, ctx: ExtensionContext): Promise<{ block: boolean; reason?: string }> {
-        const firstToken = command.trim().split(/\s+/)[0];
+        const commandsToVerify = this.getCommands(command);
         
-        if (this.projectAllowlist.has(firstToken) || this.globalAllowlist.has(firstToken)) {
-            return { block: false };
+        for (const cmdToken of commandsToVerify) {
+            if (this.projectAllowlist.has(cmdToken) || this.globalAllowlist.has(cmdToken)) {
+                continue;
+            }
+
+            const response = await ctx.ui.select(
+                `Shell command blocked: "${command}"\nUnauthorized executable found: "${cmdToken}"\nAllow once or add to allowlist?`,
+                ["Allow once", "Always allow (Project)", "Always allow (Global)", "Block"]
+            );
+
+            if (response === "Always allow (Project)") {
+                this.projectAllowlist.add(cmdToken);
+                this.saveFile(this.projectAllowlistFile, this.projectAllowlist);
+            } else if (response === "Always allow (Global)") {
+                this.globalAllowlist.add(cmdToken);
+                this.saveFile(this.globalAllowlistFile, this.globalAllowlist);
+            } else if (response === "Allow once") {
+                continue;
+            } else {
+                return { block: true, reason: `Command "${cmdToken}" blocked by user` };
+            }
         }
 
-        const response = await ctx.ui.select(
-            `Shell command blocked: "${command}"\nAllow once or add "${firstToken}" to allowlist?`,
-            ["Allow once", "Always allow (Project)", "Always allow (Global)", "Block"]
-        );
-
-        if (response === "Always allow (Project)") {
-            this.projectAllowlist.add(firstToken);
-            this.saveFile(this.projectAllowlistFile, this.projectAllowlist);
-            return { block: false };
-        } else if (response === "Always allow (Global)") {
-            this.globalAllowlist.add(firstToken);
-            this.saveFile(this.globalAllowlistFile, this.globalAllowlist);
-            return { block: false };
-        } else if (response === "Allow once") {
-            return { block: false };
-        }
-
-        return { block: true, reason: "Blocked by user" };
+        return { block: false };
     }
 
     public add(token: string, global: boolean = false) {
