@@ -1,56 +1,69 @@
-import { ExtensionAPI, ExtensionContext, ToolCallEvent, isToolCallEventType, CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
+import { ExtensionAPI, ExtensionContext, ToolCallEvent, isToolCallEventType, CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 
 class BlockShellCommands {
-    private allowlist: Set<string> = new Set();
-    private allowlistFile: string;
+    private projectAllowlist: Set<string> = new Set();
+    private globalAllowlist: Set<string> = new Set();
+    private projectAllowlistFile: string;
+    private globalAllowlistFile: string;
 
     constructor(cwd: string) {
         const configDir = join(cwd, CONFIG_DIR_NAME);
-        this.allowlistFile = join(configDir, "shell-allowlist.json");
-        this.loadAllowlist();
+        this.projectAllowlistFile = join(configDir, "shell-allowlist.json");
+        this.globalAllowlistFile = join(getAgentDir(), "shell-allowlist.json");
+        this.loadAllowlists();
     }
 
-    private loadAllowlist(): void {
+    private loadAllowlists(): void {
+        this.projectAllowlist = this.loadFile(this.projectAllowlistFile);
+        this.globalAllowlist = this.loadFile(this.globalAllowlistFile);
+    }
+
+    private loadFile(path: string): Set<string> {
         try {
-            if (existsSync(this.allowlistFile)) {
-                const data = readFileSync(this.allowlistFile, "utf-8");
+            if (existsSync(path)) {
+                const data = readFileSync(path, "utf-8");
                 const list = JSON.parse(data);
-                this.allowlist = new Set(list);
+                return new Set(list);
             }
         } catch (e) {
-            console.error("Failed to load shell allowlist:", e);
+            console.error(`Failed to load shell allowlist from ${path}:`, e);
         }
+        return new Set();
     }
 
-    private saveAllowlist(): void {
+    private saveFile(path: string, list: Set<string>): void {
         try {
-            const dir = join(this.allowlistFile, "..");
+            const dir = join(path, "..");
             if (!existsSync(dir)) {
                 mkdirSync(dir, { recursive: true });
             }
-            writeFileSync(this.allowlistFile, JSON.stringify(Array.from(this.allowlist), null, 2));
+            writeFileSync(path, JSON.stringify(Array.from(list), null, 2));
         } catch (e) {
-            console.error("Failed to save shell allowlist:", e);
+            console.error(`Failed to save shell allowlist to ${path}:`, e);
         }
     }
 
     public async shouldBlock(command: string, ctx: ExtensionContext): Promise<{ block: boolean; reason?: string }> {
         const firstToken = command.trim().split(/\s+/)[0];
         
-        if (this.allowlist.has(firstToken)) {
+        if (this.projectAllowlist.has(firstToken) || this.globalAllowlist.has(firstToken)) {
             return { block: false };
         }
 
         const response = await ctx.ui.select(
             `Shell command blocked: "${command}"\nAllow once or add "${firstToken}" to allowlist?`,
-            ["Allow once", "Always allow", "Block"]
+            ["Allow once", "Always allow (Project)", "Always allow (Global)", "Block"]
         );
 
-        if (response === "Always allow") {
-            this.allowlist.add(firstToken);
-            this.saveAllowlist();
+        if (response === "Always allow (Project)") {
+            this.projectAllowlist.add(firstToken);
+            this.saveFile(this.projectAllowlistFile, this.projectAllowlist);
+            return { block: false };
+        } else if (response === "Always allow (Global)") {
+            this.globalAllowlist.add(firstToken);
+            this.saveFile(this.globalAllowlistFile, this.globalAllowlist);
             return { block: false };
         } else if (response === "Allow once") {
             return { block: false };
@@ -59,9 +72,14 @@ class BlockShellCommands {
         return { block: true, reason: "Blocked by user" };
     }
 
-    public add(token: string) {
-        this.allowlist.add(token);
-        this.saveAllowlist();
+    public add(token: string, global: boolean = false) {
+        if (global) {
+            this.globalAllowlist.add(token);
+            this.saveFile(this.globalAllowlistFile, this.globalAllowlist);
+        } else {
+            this.projectAllowlist.add(token);
+            this.saveFile(this.projectAllowlistFile, this.projectAllowlist);
+        }
     }
 }
 
@@ -75,23 +93,26 @@ export default function (pi: ExtensionAPI) {
 
     pi.on("tool_call", async (event, ctx) => {
         if (isToolCallEventType("bash", event)) {
-            const command = event.input.command;
+            const command = (event as any).input.command;
             const result = await blocker.shouldBlock(command, ctx);
             if (result.block) {
-                return result;
+                return result as any;
             }
         }
     });
 
     pi.registerCommand("allow-cmd", {
-        description: "Add a command (first token) to the shell allowlist",
+        description: "Add a command (first token) to the shell allowlist. Use --global for global allowlist.",
         handler: async (args: string, ctx: ExtensionContext) => {
-            const token = args?.trim().split(/\s+/)[0];
+            const parts = args?.trim().split(/\s+/);
+            const isGlobal = parts?.includes("--global");
+            const token = parts?.filter(p => p !== "--global")[0];
+
             if (token) {
-                blocker.add(token);
-                ctx.ui.notify(`Added "${token}" to allowlist`, "info");
+                blocker.add(token, isGlobal);
+                ctx.ui.notify(`Added "${token}" to ${isGlobal ? "global" : "project"} allowlist`, "info");
             } else {
-                ctx.ui.notify("Usage: /allow-cmd <command>", "error");
+                ctx.ui.notify("Usage: /allow-cmd <command> [--global]", "error");
             }
         },
     });
