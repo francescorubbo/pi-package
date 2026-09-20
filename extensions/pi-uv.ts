@@ -31,6 +31,7 @@ const PYTHON_TOOLS = [
 	"pylint",
 	"pyright",
 	"pyproject-fmt",
+	"ty",
 	"pip",
 	"pip3",
 	"twine",
