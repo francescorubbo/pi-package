@@ -12,6 +12,13 @@ Prevents the agent from executing shell commands by default. When a command is a
   - **Always allow**: Adds the command's first token (e.g., `uv` for `uv sync`) to the allowlist.
   - **Block**: Rejects the execution.
 
+### UV Python Runner (`pi-uv.ts`)
+Automatically rewrites Python-related commands (e.g., `python`, `pytest`, `ruff`) to use `uv run`.
+- Detects the nearest `uv.lock` file to determine the project root.
+- Prepends `uv run --project <path>` to the command.
+- Ensures commands are executed within the correct virtual environment without manual activation.
+
+
 ## Installation
 
 ### Local Development

@@ -5,7 +5,8 @@
   "type": "module",
   "pi": {
     "extensions": [
-      "./extensions/block-shell-commands.ts"
+      "./extensions/block-shell-commands.ts",
+      "./extensions/pi-uv.ts"
     ]
   },
   "scripts": {
