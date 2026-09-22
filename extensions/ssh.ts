@@ -143,6 +143,85 @@ export default function (pi: ExtensionAPI) {
 
 	const getSsh = () => resolvedSsh;
 
+	pi.on("session_start", async (_event, ctx) => {
+		// Resolve SSH config now that CLI flags are available
+		const arg = pi.getFlag("ssh") as string | undefined;
+		if (arg) {
+			try {
+				if (arg.includes(":")) {
+					const [remote, remotePath] = arg.split(":");
+					resolvedSsh = { remote, remoteCwd: remotePath };
+				} else {
+					const remote = arg;
+					const pwd = (await sshExec(remote, "pwd")).toString().trim();
+					resolvedSsh = { remote, remoteCwd: pwd };
+				}
+				ctx.ui.setStatus("ssh", ctx.ui.theme.fg("accent", `SSH: ${resolvedSsh.remote}:${resolvedSsh.remoteCwd}`));
+				ctx.ui.notify(`SSH mode: ${resolvedSsh.remote}:${resolvedSsh.remoteCwd}`, "info");
+			} catch (err: any) {
+				ctx.ui.notify(`SSH connection/setup failed: ${err.message}`, "error");
+			}
+		}
+
+		ctx.ui.addAutocompleteProvider((current) => ({
+			async getSuggestions(lines, cursorLine, cursorCol, options) {
+				const ssh = getSsh();
+				if (!ssh) {
+					return current.getSuggestions(lines, cursorLine, cursorCol, options);
+				}
+
+				const line = lines[cursorLine] ?? "";
+				const beforeCursor = line.slice(0, cursorCol);
+
+				const match = beforeCursor.match(/@([^\s]*)$/);
+				if (!match) {
+					return current.getSuggestions(lines, cursorLine, cursorCol, options);
+				}
+
+				const query = match[1] ?? "";
+				const remoteDir = path.posix.join(ssh.remoteCwd, path.dirname(query));
+
+				try {
+					const cmd = `find ${JSON.stringify(remoteDir)} -maxdepth 2 -not -path '*/.*' 2>/dev/null`;
+					const res = await sshExec(ssh.remote, cmd);
+					const files = res.toString().trim().split("\n").filter(Boolean);
+
+					const items = files.map((filePath) => {
+						const rel = path.posix.relative(ssh.remoteCwd, filePath);
+						return {
+							value: `@${rel}`,
+							label: rel,
+							description: `remote: ${ssh.remote}`,
+						};
+					});
+
+					return {
+						items,
+						prefix: `@${query}`,
+					};
+				} catch {
+					return null;
+				}
+			},
+			applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+				const ssh = getSsh();
+				if (!ssh) {
+					return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+				}
+				const line = lines[cursorLine] ?? "";
+				const before = line.slice(0, cursorCol - prefix.length);
+				const after = line.slice(cursorCol);
+				const newLines = [...lines];
+				newLines[cursorLine] = `${before}${item.value} ${after}`;
+				return {
+					lines: newLines,
+					cursorLine,
+					cursorCol: before.length + item.value.length + 1,
+				};
+			},
+		}));
+	});
+
 	pi.registerTool({
 		...localRead,
 		async execute(id, params, signal, onUpdate, _ctx) {
