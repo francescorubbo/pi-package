@@ -18,6 +18,14 @@ Automatically rewrites Python-related commands (e.g., `python`, `pytest`, `ruff`
 - Prepends `uv run --project <path>` to the command.
 - Ensures commands are executed within the correct virtual environment without manual activation.
 
+### SSH Remote Execution (`ssh.ts`)
+Delegates tool operations (read, write, edit, bash) to a remote machine via SSH.
+- Supports key-based authentication (`BatchMode=yes`).
+- Usage:
+  - `pi -e ./extensions/ssh.ts --ssh user@host`
+  - `pi -e ./extensions/ssh.ts --ssh user@host:/remote/path`
+- Robust path mapping, stdin file streaming, and connection error handling.
+
 
 ## Installation
 

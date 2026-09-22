@@ -6,7 +6,8 @@
   "pi": {
     "extensions": [
       "./extensions/block-shell-commands.ts",
-      "./extensions/pi-uv.ts"
+      "./extensions/pi-uv.ts",
+      "./extensions/ssh.ts"
     ]
   },
   "scripts": {
