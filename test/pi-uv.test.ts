@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { rewriteCommand } from "../extensions/pi-uv.js";
+import { rewriteCommand } from "../extensions/pi-uv-core.js";
 
 describe("rewriteCommand", () => {
     // `cwd` has a uv.lock itself; the rest are containers for project detection.
