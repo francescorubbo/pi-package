@@ -2,12 +2,19 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { rewriteCommand } from "./pi-uv-core.js";
 
-// pi extension — auto-rewrites Python commands to use `uv run`.
+// pi extension — routes Python commands through `uv run`.
 // Requires: uv in PATH.
 //
-// Detects Python-related commands (python, pytest, ruff, etc.) and
-// prepends `uv run --project <project>` so they execute inside the
-// correct uv-managed virtual environment.
+// The model is asked via the system prompt to invoke Python tools
+// (python, pytest, ruff, etc.) as `uv run ...` itself. When it does not,
+// this extension rewrites the command before execution and prepends
+// `uv run --project <project>` so it still lands in the correct
+// uv-managed virtual environment.
+//
+// Prompt guidance is the primary mechanism: the command the model emits
+// is then the command that executes, so tool output matches its intent.
+// The `tool_call` rewrite is an enforcement fallback for direct Python
+// invocations the model forgot to wrap.
 //
 // Command detection is delegated to `shell-command-parser.ts`, which
 // tokenizes the command with source offsets while respecting quoting,
@@ -20,6 +27,9 @@ import { rewriteCommand } from "./pi-uv-core.js";
 
 const REWRITE_TIMEOUT_MS = 2_000;
 
+const GUIDELINE =
+	"Run Python tools (python, python3, pytest, ruff, mypy, black, etc.) through `uv run` so they use the project's uv-managed environment, e.g. `uv run pytest` or `uv run python main.py`. Do not invoke them directly: the pi-uv extension rewrites direct invocations, so otherwise the command that executes differs from the one you emit.";
+
 export default async function (pi: ExtensionAPI) {
 	const ver = await pi.exec("uv", ["--version"], {
 		timeout: REWRITE_TIMEOUT_MS,
@@ -28,6 +38,14 @@ export default async function (pi: ExtensionAPI) {
 		console.warn("[pi-uv] uv binary not found in PATH — extension disabled");
 		return;
 	}
+
+	pi.on("before_agent_start", (event) => {
+		// Mutate the guideline collection so pi patches only the changed prompt
+		// section instead of replacing the whole system prompt.
+		if (!event.systemPromptOptions.promptGuidelines.includes(GUIDELINE)) {
+			event.systemPromptOptions.promptGuidelines.push(GUIDELINE);
+		}
+	});
 
 	pi.on("tool_call", (event: any, ctx: any) => {
 		try {

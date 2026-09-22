@@ -16,9 +16,11 @@ Prevents the agent from executing shell commands by default. When a command is a
 The shell parsing logic lives in `extensions/shell-command-parser.ts` and is covered by unit tests.
 
 ### UV Python Runner (`pi-uv.ts`)
-Automatically rewrites Python-related commands (e.g., `python`, `pytest`, `ruff`) to use `uv run`.
+Routes Python-related commands (e.g., `python`, `pytest`, `ruff`) through `uv run`.
+- **Prompt**: a system-prompt guideline tells the model to invoke Python tools as `uv run ...` itself, so the command it emits is the command that executes and tool output matches its intent.
+- **Enforcement**: if the model still invokes a Python tool directly, the `tool_call` handler rewrites it to `uv run` as a fallback.
 - Detects the nearest `uv.lock` file to determine the project root.
-- Prepends `uv run --project <path>` to each Python invocation.
+- Prepends `uv run --project <path>` to each rewritten Python invocation.
 - Finds path-qualified interpreters (`.venv/bin/python`, `/usr/bin/python3`) and Python commands anywhere in a compound command (`cd x && .venv/bin/pytest`), using the shell-aware parser in `shell-command-parser.ts`.
 - Ensures commands are executed within the correct virtual environment without manual activation.
 
