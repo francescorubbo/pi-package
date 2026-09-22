@@ -27,9 +27,15 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { REMOTE_CWD_CHANNEL } from "./remote-cwd.js";
 import { addPromptGuideline } from "./prompt-guidelines.js";
+import { prependRemotePath } from "./ssh-remote-env.js";
 
 function sshSpawn(remote: string, args: string[], options?: { input?: Buffer }) {
-	const child = spawn("ssh", ["-o", "BatchMode=yes", remote, ...args], {
+	// Non-interactive SSH does not source the user's profile, so user-local
+	// tools such as `uv` (~/.local/bin/uv) are not on the remote PATH. Apply
+	// the PATH prefix centrally here so every remote operation (bash, read,
+	// write, edit, autocomplete) sees them without callers prefixing commands.
+	const remoteArgs = args.length === 1 ? [prependRemotePath(args[0])] : args;
+	const child = spawn("ssh", ["-o", "BatchMode=yes", remote, ...remoteArgs], {
 		stdio: [options?.input ? "pipe" : "ignore", "pipe", "pipe"],
 	});
 	if (options?.input && child.stdin) {

@@ -38,6 +38,7 @@ Delegates tool operations (read, write, edit, bash) to a remote machine via SSH.
   - `pi -e ./extensions/ssh.ts --ssh user@host`
   - `pi -e ./extensions/ssh.ts --ssh user@host:/remote/path`
 - Robust path mapping (local paths are mapped into the remote tree; remote absolute paths are accepted as-is), stdin file streaming, and connection error handling.
+- Prepends the conventional user-local bin directory (`$HOME/.local/bin`) to the remote `PATH` on every operation. Non-interactive SSH does not source the user's profile, so tools installed there (notably `uv`) would otherwise be missing and every command would need an `export PATH=...` prefix.
 - Advertises the remote working directory in the system prompt and publishes it on pi's event bus (`remote-cwd.ts`) so `strip-cwd-prefix.ts` can remove redundant `cd` prefixes. It mutates the structured system-prompt options rather than returning a whole prompt, so guidelines added by other extensions are preserved.
 
 
