@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { existsSync, readdirSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
+import { extractCommandsWithPositions, extractWordTokens } from "./shell-command-parser.js";
 
 // pi extension — auto-rewrites Python commands to use `uv run`.
 // Requires: uv in PATH.
@@ -10,6 +11,12 @@ import { join, dirname, resolve, relative } from "node:path";
 // prepends `uv run --project <project>` so they execute inside the
 // correct uv-managed virtual environment.
 //
+// Command detection is delegated to `shell-command-parser.ts`, which
+// tokenizes the command with source offsets while respecting quoting,
+// separators, redirections and heredocs. This lets us find Python tools
+// anywhere in a compound command, including path-qualified invocations
+// such as `.venv/bin/python` or `/usr/bin/python3`.
+//
 // Project root detection (in order):
 //   1. From command argument path (e.g. project-a/main.py → project-a/)
 //   2. Walk up from CWD looking for uv.lock
@@ -17,7 +24,7 @@ import { join, dirname, resolve, relative } from "node:path";
 
 const REWRITE_TIMEOUT_MS = 2_000;
 
-const PYTHON_TOOLS = [
+const PYTHON_TOOLS = new Set([
 	"python",
 	"python3",
 	"pytest",
@@ -39,26 +46,32 @@ const PYTHON_TOOLS = [
 	"gunicorn",
 	"fastapi",
 	"django-admin",
-];
+]);
 
-// Build a regex that matches any tool name at the start of a command,
-// using a word boundary to avoid matching longer names by accident.
-const TOOL_PATTERN = new RegExp(`^\\s*(?:${PYTHON_TOOLS.join("|")})\\b`);
+// Versioned interpreters such as `python3.12` or `python2.7`.
+const VERSIONED_PYTHON_RE = /^python\d+(?:\.\d+)*$/;
 
-const BLOCK_TOKENS = ["uv run", "uvx"];
+/** Returns the last path segment, e.g. `.venv/bin/python` → `python`. */
+function basename(p: string): string {
+	const i = p.lastIndexOf("/");
+	return i === -1 ? p : p.slice(i + 1);
+}
 
-// Split by shell operators, keeping the operators in the result
-const SHELL_OP_RE = /(\\s*&&\\s*|\\s*\\|\\|\\s*|\\s*\\|\\s*|\\s*;\\s*|\\s*<\\s*|\\s*>\\s*)/;
+function isPythonTool(name: string): boolean {
+	return PYTHON_TOOLS.has(name) || VERSIONED_PYTHON_RE.test(name);
+}
 
 /**
  * Extract the first non-flag positional argument that contains a path
- * separator. Skips the tool name, flags (-m, -c, etc.), and their values.
+ * separator from a command's argument words. Skips flags (-m, -c, etc.)
+ * and their values.
  *
+ * @param args Argument words, excluding the executable itself.
  * @returns The raw argument string (e.g. "project-a/main.py"), or null.
  */
-function extractTargetPath(tokens: string[]): string | null {
-	for (let i = 1; i < tokens.length; i++) {
-		const token = tokens[i];
+function extractTargetPath(args: string[]): string | null {
+	for (let i = 0; i < args.length; i++) {
+		const token = args[i];
 
 		// Skip -m <module> and -c <code>
 		if (token === "-m" || token === "-c") {
@@ -95,25 +108,20 @@ function walkUpForLock(dir: string): string | null {
 }
 
 /**
- * Detect the uv project root from the command and current working directory.
+ * Detect the uv project root for a Python invocation.
  *
  * Strategy (in order):
- *   Phase 1 — Extract a file/directory path from the command's arguments.
- *             Resolve it relative to CWD and walk up looking for `uv.lock`.
+ *   Phase 1 — Walk up from the directory of a path argument (if any).
  *   Phase 2 — Walk up from CWD itself.
  *   Phase 3 — Scan CWD's immediate subdirectories for `uv.lock`.
  *
  * @returns Absolute path to the project root, or null if none found.
  */
-function findUvProjectRoot(cwd: string, cmd: string): string | null {
-	const tokens = cmd.trim().split(/\\s+/);
-
+function findUvProjectRoot(cwd: string, argPath: string | null): string | null {
 	// Phase 1: command argument path
-	const argPath = extractTargetPath(tokens);
 	if (argPath) {
 		const absPath = resolve(cwd, argPath);
-		const dir = dirname(absPath);
-		const found = walkUpForLock(dir);
+		const found = walkUpForLock(dirname(absPath));
 		if (found) return found;
 	}
 
@@ -135,42 +143,49 @@ function findUvProjectRoot(cwd: string, cmd: string): string | null {
 }
 
 function quotePath(p: string): string {
-	return /[\\s'\"]/.test(p) ? `"${p}"` : p;
+	return /[\s'"]/.test(p) ? `"${p}"` : p;
 }
 
-function rewriteCommand(cmd: string, cwd: string): string | null {
-	const parts = cmd.split(SHELL_OP_RE);
+/**
+ * Rewrite every Python-tool invocation in `cmd` to run through `uv run`,
+ * inserting the wrapper at the executable's position. Replacements are
+ * applied right-to-left so earlier source offsets stay valid.
+ *
+ * Exported for tests.
+ *
+ * @returns The rewritten command, or null when nothing was changed.
+ */
+export function rewriteCommand(cmd: string, cwd: string): string | null {
+	const commands = extractCommandsWithPositions(cmd);
+	if (commands.length === 0) return null;
+
+	// Word tokens are only needed to locate each invocation's target path.
+	const words = extractWordTokens(cmd);
+
+	let result = cmd;
 	let changed = false;
 
-	for (let i = 0; i < parts.length; i++) {
-		const segment = parts[i].trim();
+	for (let idx = commands.length - 1; idx >= 0; idx--) {
+		const invocation = commands[idx];
+		const tool = basename(invocation.command);
+		if (!isPythonTool(tool)) continue;
 
-		// Skip shell operators (odd indices) and empty segments
-		if (i % 2 === 1 || !segment) continue;
+		// This invocation's arguments end where the next command begins.
+		const nextStart = commands[idx + 1]?.start ?? cmd.length;
+		const args = words
+			.filter((w) => w.start >= invocation.end && w.start < nextStart)
+			.map((w) => w.value);
 
-		if (!TOOL_PATTERN.test(segment)) continue;
-
-		// Check if already wrapped
-		let alreadyWrapped = false;
-		for (const token of BLOCK_TOKENS) {
-			if (segment.includes(token)) {
-				alreadyWrapped = true;
-				break;
-			}
-		}
-		if (alreadyWrapped) continue;
-
-		// Detect project root
-		const projectRoot = findUvProjectRoot(cwd, segment);
+		const projectRoot = findUvProjectRoot(cwd, extractTargetPath(args));
 		if (!projectRoot) continue;
 
 		const relPath = relative(cwd, projectRoot) || ".";
-		parts[i] = `uv run --project ${quotePath(relPath)} ${segment}`;
+		const replacement = `uv run --project ${quotePath(relPath)} ${tool}`;
+		result = result.slice(0, invocation.start) + replacement + result.slice(invocation.end);
 		changed = true;
 	}
 
-	if (!changed) return null;
-	return parts.join("");
+	return changed ? result : null;
 }
 
 export default async function (pi: ExtensionAPI) {

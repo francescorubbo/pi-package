@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { extractCommands, sanitizeCommand } from "../extensions/shell-command-parser.js";
+import {
+    extractCommands,
+    extractCommandsWithPositions,
+    extractWordTokens,
+    sanitizeCommand,
+} from "../extensions/shell-command-parser.js";
 
 describe("extractCommands", () => {
     describe("simple commands", () => {
@@ -155,5 +160,67 @@ describe("sanitizeCommand", () => {
 
     it("does not treat arithmetic shifts as heredocs", () => {
         expect(sanitizeCommand("echo $((1<<2))")).toBe("echo $((1<<2))");
+    });
+});
+
+describe("extractCommandsWithPositions", () => {
+    /** Every reported position should slice back to the executable as written. */
+    function expectSpansMatch(command: string, expected: string[]) {
+        const invocations = extractCommandsWithPositions(command);
+        expect(invocations.map((c) => c.command)).toEqual(expected);
+        for (const invocation of invocations) {
+            expect(command.slice(invocation.start, invocation.end)).toBe(invocation.command);
+        }
+    }
+
+    it("reports the executable offset for a simple command", () => {
+        const command = "python main.py";
+        expect(extractCommandsWithPositions(command)).toEqual([
+            { command: "python", start: 0, end: 6 },
+        ]);
+    });
+
+    it("finds path-qualified executables after other commands", () => {
+        expectSpansMatch("cd project-a && .venv/bin/python main.py", [
+            "cd",
+            ".venv/bin/python",
+        ]);
+        expectSpansMatch("git status; /usr/bin/python3 script.py", ["git", "/usr/bin/python3"]);
+    });
+
+    it("dequotes the executable but spans the original token", () => {
+        const command = '".venv/bin/python" main.py';
+        const [invocation] = extractCommandsWithPositions(command);
+        expect(invocation.command).toBe(".venv/bin/python");
+        expect(command.slice(invocation.start, invocation.end)).toBe('".venv/bin/python"');
+    });
+
+    it.each([
+        ["foo 2>/dev/null", ["foo"]],
+        ["foo > out.txt && python x.py", ["foo", "python"]],
+        ["python3 - <<'PY'\nprint(1)\nPY", ["python3"]],
+        ["FOO=bar python x.py", ["python"]],
+        ["echo hi | grep foo && pytest", ["echo", "grep", "pytest"]],
+        ["(cd foo && ls)", ["cd", "ls"]],
+    ])("parses %j", (command, expected) => {
+        expectSpansMatch(command, expected);
+    });
+});
+
+describe("extractWordTokens", () => {
+    it("returns dequoted words with offsets", () => {
+        const command = 'python "a b.py" -m pytest';
+        expect(extractWordTokens(command).map((w) => w.value)).toEqual([
+            "python",
+            "a b.py",
+            "-m",
+            "pytest",
+        ]);
+    });
+
+    it("preserves the source span of quoted words", () => {
+        const command = 'python "a b.py"';
+        const word = extractWordTokens(command)[1];
+        expect(command.slice(word.start, word.end)).toBe('"a b.py"');
     });
 });

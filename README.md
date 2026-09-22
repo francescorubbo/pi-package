@@ -18,7 +18,8 @@ The shell parsing logic lives in `extensions/shell-command-parser.ts` and is cov
 ### UV Python Runner (`pi-uv.ts`)
 Automatically rewrites Python-related commands (e.g., `python`, `pytest`, `ruff`) to use `uv run`.
 - Detects the nearest `uv.lock` file to determine the project root.
-- Prepends `uv run --project <path>` to the command.
+- Prepends `uv run --project <path>` to each Python invocation.
+- Finds path-qualified interpreters (`.venv/bin/python`, `/usr/bin/python3`) and Python commands anywhere in a compound command (`cd x && .venv/bin/pytest`), using the shell-aware parser in `shell-command-parser.ts`.
 - Ensures commands are executed within the correct virtual environment without manual activation.
 
 ### SSH Remote Execution (`ssh.ts`)
