@@ -25,6 +25,8 @@ import {
 	type ReadOperations,
 	type WriteOperations,
 } from "@earendil-works/pi-coding-agent";
+import { REMOTE_CWD_CHANNEL } from "./remote-cwd.js";
+import { addPromptGuideline } from "./prompt-guidelines.js";
 
 function sshSpawn(remote: string, args: string[], options?: { input?: Buffer }) {
 	const child = spawn("ssh", ["-o", "BatchMode=yes", remote, ...args], {
@@ -55,10 +57,37 @@ function sshExec(remote: string, command: string, input?: Buffer): Promise<Buffe
 	});
 }
 
+/** Resolve the `--ssh` flag into a remote target and an absolute remote cwd. */
+async function resolveSshTarget(arg: string): Promise<{ remote: string; remoteCwd: string }> {
+	const colon = arg.indexOf(":");
+	if (colon !== -1) {
+		const remote = arg.slice(0, colon);
+		const remotePath = arg.slice(colon + 1);
+		// Resolve to an absolute path on the remote so path mapping is stable.
+		const command = remotePath ? `cd ${JSON.stringify(remotePath)} && pwd` : "pwd";
+		const remoteCwd = (await sshExec(remote, command)).toString().trim();
+		return { remote, remoteCwd };
+	}
+	const remote = arg;
+	const remoteCwd = (await sshExec(remote, "pwd")).toString().trim();
+	return { remote, remoteCwd };
+}
+
 function createRemotePathMapper(remoteCwd: string, localCwd: string) {
+	const localPrefix = localCwd.endsWith(path.sep) ? localCwd : `${localCwd}${path.sep}`;
+	const remotePrefix = remoteCwd.endsWith("/") ? remoteCwd : `${remoteCwd}/`;
+	const toRemotePosix = (local: string) =>
+		path.posix.join(remoteCwd, path.relative(localCwd, local).split(path.sep).join("/"));
 	return (p: string) => {
-		const rel = path.relative(localCwd, p);
-		return path.posix.join(remoteCwd, rel.split(path.sep).join("/"));
+		const abs = path.resolve(localCwd, p);
+		// A local path (relative or absolute) is mapped into the remote tree.
+		if (abs === localCwd || abs.startsWith(localPrefix)) return toRemotePosix(abs);
+		// A path that is already absolute on the remote host (e.g. one the model
+		// copied from the system prompt's `<cwd>` section) is returned as-is, so
+		// making the prompt advertise the remote cwd does not break file tools.
+		if (p === remoteCwd || p.startsWith(remotePrefix)) return p;
+		// Unknown absolute path: best-effort map relative to the local root.
+		return toRemotePosix(p);
 	};
 }
 
@@ -140,6 +169,7 @@ export default function (pi: ExtensionAPI) {
 
 	// Resolved lazily on session_start (CLI flags not available during factory)
 	let resolvedSsh: { remote: string; remoteCwd: string } | null = null;
+	let autocompleteRegistered = false;
 
 	const getSsh = () => resolvedSsh;
 
@@ -148,20 +178,19 @@ export default function (pi: ExtensionAPI) {
 		const arg = pi.getFlag("ssh") as string | undefined;
 		if (arg) {
 			try {
-				if (arg.includes(":")) {
-					const [remote, remotePath] = arg.split(":");
-					resolvedSsh = { remote, remoteCwd: remotePath };
-				} else {
-					const remote = arg;
-					const pwd = (await sshExec(remote, "pwd")).toString().trim();
-					resolvedSsh = { remote, remoteCwd: pwd };
-				}
+				resolvedSsh = await resolveSshTarget(arg);
 				ctx.ui.setStatus("ssh", ctx.ui.theme.fg("accent", `SSH: ${resolvedSsh.remote}:${resolvedSsh.remoteCwd}`));
 				ctx.ui.notify(`SSH mode: ${resolvedSsh.remote}:${resolvedSsh.remoteCwd}`, "info");
+				// Publish the remote cwd so strip-cwd-prefix can recognize redundant
+				// `cd <remote> &&` prefixes in bash commands.
+				pi.events.emit(REMOTE_CWD_CHANNEL, { cwd: resolvedSsh.remoteCwd, remote: resolvedSsh.remote });
 			} catch (err: any) {
 				ctx.ui.notify(`SSH connection/setup failed: ${err.message}`, "error");
 			}
 		}
+
+		if (autocompleteRegistered) return;
+		autocompleteRegistered = true;
 
 		ctx.ui.addAutocompleteProvider((current) => ({
 			async getSuggestions(lines, cursorLine, cursorCol, options) {
@@ -278,27 +307,6 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
-		// Resolve SSH config now that CLI flags are available
-		const arg = pi.getFlag("ssh") as string | undefined;
-		if (arg) {
-			try {
-				if (arg.includes(":")) {
-					const [remote, remotePath] = arg.split(":");
-					resolvedSsh = { remote, remoteCwd: remotePath };
-				} else {
-					const remote = arg;
-					const pwd = (await sshExec(remote, "pwd")).toString().trim();
-					resolvedSsh = { remote, remoteCwd: pwd };
-				}
-				ctx.ui.setStatus("ssh", ctx.ui.theme.fg("accent", `SSH: ${resolvedSsh.remote}:${resolvedSsh.remoteCwd}`));
-				ctx.ui.notify(`SSH mode: ${resolvedSsh.remote}:${resolvedSsh.remoteCwd}`, "info");
-			} catch (err: any) {
-				ctx.ui.notify(`SSH connection/setup failed: ${err.message}`, "error");
-			}
-		}
-	});
-
 	// Handle user ! commands via SSH
 	pi.on("user_bash", (_event) => {
 		const ssh = getSsh();
@@ -306,15 +314,22 @@ export default function (pi: ExtensionAPI) {
 		return { operations: createRemoteBashOps(ssh.remote, ssh.remoteCwd, localCwd) };
 	});
 
-	// Replace local cwd with remote cwd in system prompt
+	// Advertise the remote cwd instead of the local one, and tell the model that
+	// bash already starts there.
+	//
+	// This mutates the structured `systemPromptOptions` rather than returning a
+	// `systemPrompt`. Returning a whole prompt sets `forceSystemPrompt`, which
+	// would discard other extensions' `promptGuidelines` additions (e.g. the
+	// strip-cwd-prefix and pi-uv guidelines) from the request actually sent.
 	pi.on("before_agent_start", async (event) => {
 		const ssh = getSsh();
-		if (ssh) {
-			const modified = event.systemPrompt.replace(
-				`Current working directory: ${localCwd}`,
-				`Current working directory: ${ssh.remoteCwd} (via SSH: ${ssh.remote})`,
-			);
-			return { systemPrompt: modified };
-		}
+		if (!ssh) return;
+
+		event.systemPromptOptions.cwd = ssh.remoteCwd;
+		const guideline = `File and bash tools run on the remote host ${ssh.remote} over SSH. Bash commands already start in the remote project root (${ssh.remoteCwd}), so never prefix them with \`cd\`; use project-relative paths instead.`;
+		// The shared helper keeps the guideline order canonical, so the rendered
+		// `<rules>` section stays byte-identical across turns (and therefore avoids
+		// re-patching it as a cache miss).
+		addPromptGuideline(event.systemPromptOptions.promptGuidelines, guideline);
 	});
 }

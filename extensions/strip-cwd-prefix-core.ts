@@ -11,21 +11,35 @@ const CWD_ALIASES = new Set(["$PWD", "${PWD}"]);
 /** Separators that let us drop a no-op leading `cd` without changing behavior. */
 const SAFE_SEPARATORS = new Set(["&&", ";"]);
 
-/** Returns true when `target` is a no-op `cd` back into `cwd`. */
-function isCwdTarget(target: string, cwd: string): boolean {
+/**
+ * Normalizes the caller-supplied working directory (or directories) into a
+ * non-empty list. Accepts several candidates because a session can have more
+ * than one valid "here": e.g. the local cwd plus the remote cwd when the bash
+ * tool runs over SSH.
+ */
+function normalizeCwds(cwd: string | readonly string[]): string[] {
+	return (typeof cwd === "string" ? [cwd] : [...cwd]).filter((c) => c.length > 0);
+}
+
+/** Returns true when `target` is a no-op `cd` back into one of `cwds`. */
+function isCwdTarget(target: string, cwds: readonly string[]): boolean {
 	// `cd ""` is an error in bash, not a jump to cwd.
 	if (target === "" || target === "-") return false;
 	if (CWD_ALIASES.has(target)) return true;
 	// Lexical comparison only: a symlinked path that resolves elsewhere is
 	// left untouched (conservative).
-	return resolve(cwd, target) === resolve(cwd);
+	return cwds.some((cwd) => resolve(cwd, target) === resolve(cwd));
 }
 
 /**
  * Removes a leading `cd <cwd>` prefix from a shell command. Only strips the
- * prefix when every leading `cd` is a no-op (its target resolves back to the
- * current working directory) and a real command follows it. Returns the
- * rewritten command, or `null` when nothing changed.
+ * prefix when every leading `cd` is a no-op (its target resolves back to one
+ * of the supplied working directories) and a real command follows it. Returns
+ * the rewritten command, or `null` when nothing changed.
+ *
+ * `cwd` may be a single directory or a list of valid directories. The list
+ * form is used in SSH sessions, where the session cwd is the local path but
+ * the command actually runs in a different remote directory.
  *
  * Examples (cwd = `/home/me/proj`):
  *   `cd /home/me/proj && ls`  -> `ls`
@@ -35,8 +49,14 @@ function isCwdTarget(target: string, cwd: string): boolean {
  *   `cd /elsewhere && ls`     -> null   (intentional cd)
  *   `ls && cd /home/me/proj`  -> null   (not a prefix)
  */
-export function stripRedundantCwdPrefix(command: string, cwd: string): string | null {
+export function stripRedundantCwdPrefix(
+	command: string,
+	cwd: string | readonly string[],
+): string | null {
 	if (typeof command !== "string" || command.trim() === "") return null;
+
+	const cwds = normalizeCwds(cwd);
+	if (cwds.length === 0) return null;
 
 	const tokens = tokenizeCommand(command);
 	let index = 0;
@@ -55,7 +75,7 @@ export function stripRedundantCwdPrefix(command: string, cwd: string): string | 
 
 		const target = tokens[argIndex];
 		if (!target || target.kind !== "word") break;
-		if (!isCwdTarget(target.value, cwd)) break;
+		if (!isCwdTarget(target.value, cwds)) break;
 
 		const separator = tokens[argIndex + 1];
 		if (!separator || separator.kind !== "op" || !SAFE_SEPARATORS.has(separator.value)) break;

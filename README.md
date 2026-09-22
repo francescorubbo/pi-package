@@ -26,10 +26,10 @@ Routes Python-related commands (e.g., `python`, `pytest`, `ruff`) through `uv ru
 
 ### Strip CWD Prefix (`strip-cwd-prefix.ts`)
 Some models prepend `cd <absolute cwd> &&` to every bash command even though commands already run in the working directory. This extension applies two mitigations:
-- **Cleanup**: before each bash command runs, a leading no-op `cd <cwd>` prefix is stripped. Only prefixes that resolve back to the session cwd are removed, so intentional `cd` into another directory is preserved. Handles quoting, `cd --`, chained `cd`s, and `;`/newline separators.
+- **Cleanup**: before each bash command runs, a leading no-op `cd <cwd>` prefix is stripped. Only prefixes that resolve back to a valid working directory are removed, so intentional `cd` into another directory is preserved. Handles quoting, `cd --`, chained `cd`s, and `;`/newline separators.
 - **Prompt**: a system-prompt guideline tells the model that bash already starts in the working directory.
 
-The rewriting logic lives in `extensions/strip-cwd-prefix-core.ts` and is covered by unit tests.
+In SSH sessions the session cwd (the local path) differs from the directory commands actually execute in. The ssh extension publishes its remote cwd on pi's event bus (`remote-cwd.ts`), and this extension accepts both directories, so `cd <remote-project-root> && ...` is stripped as well. The rewriting logic lives in `extensions/strip-cwd-prefix-core.ts` and is covered by unit tests.
 
 ### SSH Remote Execution (`ssh.ts`)
 Delegates tool operations (read, write, edit, bash) to a remote machine via SSH.
@@ -37,8 +37,15 @@ Delegates tool operations (read, write, edit, bash) to a remote machine via SSH.
 - Usage:
   - `pi -e ./extensions/ssh.ts --ssh user@host`
   - `pi -e ./extensions/ssh.ts --ssh user@host:/remote/path`
-- Robust path mapping, stdin file streaming, and connection error handling.
+- Robust path mapping (local paths are mapped into the remote tree; remote absolute paths are accepted as-is), stdin file streaming, and connection error handling.
+- Advertises the remote working directory in the system prompt and publishes it on pi's event bus (`remote-cwd.ts`) so `strip-cwd-prefix.ts` can remove redundant `cd` prefixes. It mutates the structured system-prompt options rather than returning a whole prompt, so guidelines added by other extensions are preserved.
 
+
+## Prompt Guideline Ordering
+
+Pi diffs the generated system-prompt sections against what the model already has and patches only the sections that change. All `promptGuidelines` land in the single `<rules>` section, so the order in which extensions add them affects the rendered text: the same set in a different order is still a cache miss.
+
+Extensions in this package add guidelines through `extensions/prompt-guidelines.ts`, which keeps the collection unique and sorted. The rendered `<rules>` section is therefore identical across turns and independent of extension load order. Guidelines are also static per session (the SSH guideline embeds the resolved remote host and cwd, which are fixed once `session_start` completes), so the section changes at most once, on the first turn.
 
 ## Installation
 

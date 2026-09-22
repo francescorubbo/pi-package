@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { addPromptGuideline } from "./prompt-guidelines.js";
 import { rewriteCommand } from "./pi-uv-core.js";
 
 // pi extension — routes Python commands through `uv run`.
@@ -41,10 +42,9 @@ export default async function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", (event) => {
 		// Mutate the guideline collection so pi patches only the changed prompt
-		// section instead of replacing the whole system prompt.
-		if (!event.systemPromptOptions.promptGuidelines.includes(GUIDELINE)) {
-			event.systemPromptOptions.promptGuidelines.push(GUIDELINE);
-		}
+		// section instead of replacing the whole system prompt. The shared helper
+		// keeps the order canonical so the section text is stable across turns.
+		addPromptGuideline(event.systemPromptOptions.promptGuidelines, GUIDELINE);
 	});
 
 	pi.on("tool_call", (event: any, ctx: any) => {

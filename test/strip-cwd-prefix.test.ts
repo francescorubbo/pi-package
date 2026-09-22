@@ -34,6 +34,27 @@ describe("stripRedundantCwdPrefix", () => {
 		});
 	});
 
+	describe("multiple candidate cwds (SSH sessions)", () => {
+		const REMOTE = "/home/ubuntu/powercluster";
+
+		it("strips a prefix matching any candidate", () => {
+			expect(stripRedundantCwdPrefix(`cd ${CWD} && ls`, [CWD, REMOTE])).toBe("ls");
+			expect(stripRedundantCwdPrefix(`cd ${REMOTE} && ls`, [CWD, REMOTE])).toBe("ls");
+		});
+
+		it("still leaves an unknown directory untouched", () => {
+			expect(stripRedundantCwdPrefix("cd /somewhere/else && ls", [CWD, REMOTE])).toBeNull();
+		});
+
+		it("ignores empty candidate entries", () => {
+			expect(stripRedundantCwdPrefix(`cd ${REMOTE} && ls`, ["", CWD])).toBeNull();
+		});
+
+		it("returns null when no candidates are supplied", () => {
+			expect(stripRedundantCwdPrefix(`cd ${CWD} && ls`, [])).toBeNull();
+		});
+	});
+
 	describe("leaves intentional or ambiguous commands untouched", () => {
 		it.each([
 			[`cd /somewhere/else && ls`],
