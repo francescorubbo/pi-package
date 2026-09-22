@@ -7,10 +7,13 @@ This repository contains custom extensions for the [pi-coding-agent](https://git
 ### Shell Command Blocker (`block-shell-commands.ts`)
 Prevents the agent from executing shell commands by default. When a command is attempted:
 - It checks an allowlist stored in `.pi/shell-allowlist.json`.
+- It extracts the executable from each command, ignoring redirection targets, heredoc bodies, variable assignments, comments, and no-op builtins such as `true`.
 - If the command is not allowed, it prompts the user to:
   - **Allow once**: Permits the current execution.
   - **Always allow**: Adds the command's first token (e.g., `uv` for `uv sync`) to the allowlist.
   - **Block**: Rejects the execution.
+
+The shell parsing logic lives in `extensions/shell-command-parser.ts` and is covered by unit tests.
 
 ### UV Python Runner (`pi-uv.ts`)
 Automatically rewrites Python-related commands (e.g., `python`, `pytest`, `ruff`) to use `uv run`.
@@ -50,7 +53,14 @@ npm install
 npm run typecheck
 ```
 
+### Testing
+Unit tests use [Vitest](https://vitest.dev/):
+```bash
+npm test
+```
+
 ### Project Structure
 - `extensions/`: Contains the TypeScript source for all extensions.
-- `.github/workflows/`: CI pipeline for type checking.
+- `test/`: Unit tests for extension logic.
+- `.github/workflows/`: CI pipeline for type checking and tests.
 - `package.json`: Defines the pi package metadata and dependencies.

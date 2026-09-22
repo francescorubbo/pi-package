@@ -12,6 +12,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "prepare": "husky || true"
   },
   "dependencies": {
@@ -22,6 +23,7 @@
     "@earendil-works/pi-coding-agent": "latest",
     "@types/shell-quote": "^1.7.5",
     "husky": "^9.1.7",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^3.2.7"
   }
 }
