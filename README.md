@@ -22,6 +22,13 @@ Automatically rewrites Python-related commands (e.g., `python`, `pytest`, `ruff`
 - Finds path-qualified interpreters (`.venv/bin/python`, `/usr/bin/python3`) and Python commands anywhere in a compound command (`cd x && .venv/bin/pytest`), using the shell-aware parser in `shell-command-parser.ts`.
 - Ensures commands are executed within the correct virtual environment without manual activation.
 
+### Strip CWD Prefix (`strip-cwd-prefix.ts`)
+Some models prepend `cd <absolute cwd> &&` to every bash command even though commands already run in the working directory. This extension applies two mitigations:
+- **Cleanup**: before each bash command runs, a leading no-op `cd <cwd>` prefix is stripped. Only prefixes that resolve back to the session cwd are removed, so intentional `cd` into another directory is preserved. Handles quoting, `cd --`, chained `cd`s, and `;`/newline separators.
+- **Prompt**: a system-prompt guideline tells the model that bash already starts in the working directory.
+
+The rewriting logic lives in `extensions/strip-cwd-prefix-core.ts` and is covered by unit tests.
+
 ### SSH Remote Execution (`ssh.ts`)
 Delegates tool operations (read, write, edit, bash) to a remote machine via SSH.
 - Supports key-based authentication (`BatchMode=yes`).
