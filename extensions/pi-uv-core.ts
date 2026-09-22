@@ -5,6 +5,30 @@ import { extractCommandsWithPositions, extractWordTokens } from "./shell-command
 // Pure command-rewriting logic for the pi-uv extension. Kept free of any
 // pi-coding-agent imports so it can be unit-tested without loading the SDK.
 
+/**
+ * Filesystem probe used for `uv.lock` project detection. Async so the ssh
+ * extension can supply a remote-host implementation; the default reads the
+ * local filesystem.
+ */
+export interface ProjectFileSystem {
+	/** True when `path` exists. */
+	exists(path: string): Promise<boolean>;
+	/** Immediate child names of directory `path`, or `[]` when unreadable. */
+	readdir(path: string): Promise<string[]>;
+}
+
+/** Probe over the local filesystem; used when no remote probe is available. */
+const localFileSystem: ProjectFileSystem = {
+	exists: async (path) => existsSync(path),
+	readdir: async (path) => {
+		try {
+			return readdirSync(path);
+		} catch {
+			return [];
+		}
+	},
+};
+
 const PYTHON_TOOLS = new Set([
 	"python",
 	"python3",
@@ -77,10 +101,10 @@ function extractTargetPath(args: string[]): string | null {
  *
  * @returns The absolute path of the directory containing `uv.lock`, or null.
  */
-function walkUpForLock(dir: string): string | null {
+async function walkUpForLock(dir: string, fs: ProjectFileSystem): Promise<string | null> {
 	let current = resolve(dir);
 	while (true) {
-		if (existsSync(join(current, "uv.lock"))) return current;
+		if (await fs.exists(join(current, "uv.lock"))) return current;
 		const parent = dirname(current);
 		if (parent === current) break; // hit filesystem root
 		current = parent;
@@ -88,36 +112,26 @@ function walkUpForLock(dir: string): string | null {
 	return null;
 }
 
-/**
- * Detect the uv project root for a Python invocation.
- *
- * Strategy (in order):
- *   Phase 1 — Walk up from the directory of a path argument (if any).
- *   Phase 2 — Walk up from CWD itself.
- *   Phase 3 — Scan CWD's immediate subdirectories for `uv.lock`.
- *
- * @returns Absolute path to the project root, or null if none found.
- */
-function findUvProjectRoot(cwd: string, argPath: string | null): string | null {
+async function findUvProjectRoot(
+	cwd: string,
+	argPath: string | null,
+	fs: ProjectFileSystem,
+): Promise<string | null> {
 	// Phase 1: command argument path
 	if (argPath) {
 		const absPath = resolve(cwd, argPath);
-		const found = walkUpForLock(dirname(absPath));
+		const found = await walkUpForLock(dirname(absPath), fs);
 		if (found) return found;
 	}
 
 	// Phase 2: walk up from CWD
-	const found = walkUpForLock(cwd);
+	const found = await walkUpForLock(cwd, fs);
 	if (found) return found;
 
 	// Phase 3: scan CWD's immediate subdirectories
-	try {
-		for (const entry of readdirSync(cwd)) {
-			const full = join(cwd, entry);
-			if (existsSync(join(full, "uv.lock"))) return full;
-		}
-	} catch {
-		// CWD is not readable — silently skip Phase 3
+	for (const entry of await fs.readdir(cwd)) {
+		const full = join(cwd, entry);
+		if (await fs.exists(join(full, "uv.lock"))) return full;
 	}
 
 	return null;
@@ -132,9 +146,17 @@ function quotePath(p: string): string {
  * inserting the wrapper at the executable's position. Replacements are
  * applied right-to-left so earlier source offsets stay valid.
  *
+ * Project detection runs against `fs`, so callers can pass a probe for the
+ * machine the command will actually execute on (e.g. the remote host in SSH
+ * sessions). `cwd` must be the directory the command runs in on that machine.
+ *
  * @returns The rewritten command, or null when nothing was changed.
  */
-export function rewriteCommand(cmd: string, cwd: string): string | null {
+export async function rewriteCommand(
+	cmd: string,
+	cwd: string,
+	fs: ProjectFileSystem = localFileSystem,
+): Promise<string | null> {
 	const commands = extractCommandsWithPositions(cmd);
 	if (commands.length === 0) return null;
 
@@ -155,7 +177,7 @@ export function rewriteCommand(cmd: string, cwd: string): string | null {
 			.filter((w) => w.start >= invocation.end && w.start < nextStart)
 			.map((w) => w.value);
 
-		const projectRoot = findUvProjectRoot(cwd, extractTargetPath(args));
+		const projectRoot = await findUvProjectRoot(cwd, extractTargetPath(args), fs);
 		if (!projectRoot) continue;
 
 		const relPath = relative(cwd, projectRoot) || ".";

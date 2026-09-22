@@ -1,7 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { addPromptGuideline } from "./prompt-guidelines.js";
-import { rewriteCommand } from "./pi-uv-core.js";
+import { rewriteCommand, type ProjectFileSystem } from "./pi-uv-core.js";
+import { REMOTE_FS_CHANNEL, type RemoteFsEvent } from "./remote-fs.js";
 
 // pi extension — routes Python commands through `uv run`.
 // Requires: uv in PATH.
@@ -47,14 +48,27 @@ export default async function (pi: ExtensionAPI) {
 		addPromptGuideline(event.systemPromptOptions.promptGuidelines, GUIDELINE);
 	});
 
-	pi.on("tool_call", (event: any, ctx: any) => {
+	// In SSH sessions the bash tool runs on the remote host, so `uv.lock`
+	// detection must run there too. The ssh extension publishes the remote cwd
+	// and a filesystem probe on the event bus (see `remote-fs.ts`); use them so
+	// we never inject a `--project` path that only exists locally.
+	let remote: { cwd: string; fs: ProjectFileSystem } | null = null;
+	pi.events.on(REMOTE_FS_CHANNEL, (data) => {
+		const event = data as Partial<RemoteFsEvent> | undefined;
+		if (event && typeof event.cwd === "string" && event.cwd !== "" && event.fs) {
+			remote = { cwd: event.cwd, fs: event.fs };
+		}
+	});
+
+	pi.on("tool_call", async (event: any, ctx: any) => {
 		try {
 			if (!isToolCallEventType("bash", event)) return;
 
 			const cmd = event.input.command;
 			if (typeof cmd !== "string" || cmd.trim() === "") return;
 
-			const rewritten = rewriteCommand(cmd, ctx.cwd);
+			const cwd = remote?.cwd ?? ctx.cwd;
+			const rewritten = await rewriteCommand(cmd, cwd, remote?.fs);
 			if (rewritten && rewritten !== cmd) {
 				event.input.command = rewritten;
 				ctx.ui.notify(`[pi-uv] ${rewritten}`, "info");

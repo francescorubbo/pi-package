@@ -26,6 +26,7 @@ import {
 	type WriteOperations,
 } from "@earendil-works/pi-coding-agent";
 import { REMOTE_CWD_CHANNEL } from "./remote-cwd.js";
+import { REMOTE_FS_CHANNEL, type RemoteFileSystem } from "./remote-fs.js";
 import { addPromptGuideline } from "./prompt-guidelines.js";
 import { prependRemotePath } from "./ssh-remote-env.js";
 
@@ -61,6 +62,22 @@ function sshExec(remote: string, command: string, input?: Buffer): Promise<Buffe
 			}
 		});
 	});
+}
+
+/** Async filesystem probe backed by `sshExec`, for remote `uv.lock` detection. */
+function createRemoteFileSystem(remote: string): RemoteFileSystem {
+	return {
+		exists: (path) =>
+			sshExec(remote, `test -e ${JSON.stringify(path)}`).then(
+				() => true,
+				() => false,
+			),
+		readdir: (path) =>
+			sshExec(remote, `ls -1 ${JSON.stringify(path)}`).then(
+				(out) => out.toString().split("\n").filter(Boolean),
+				() => [],
+			),
+	};
 }
 
 /** Resolve the `--ssh` flag into a remote target and an absolute remote cwd. */
@@ -190,6 +207,13 @@ export default function (pi: ExtensionAPI) {
 				// Publish the remote cwd so strip-cwd-prefix can recognize redundant
 				// `cd <remote> &&` prefixes in bash commands.
 				pi.events.emit(REMOTE_CWD_CHANNEL, { cwd: resolvedSsh.remoteCwd, remote: resolvedSsh.remote });
+				// Publish a remote filesystem probe so pi-uv detects `uv.lock` on the
+				// host the command actually runs on, not the local machine.
+				pi.events.emit(REMOTE_FS_CHANNEL, {
+					cwd: resolvedSsh.remoteCwd,
+					remote: resolvedSsh.remote,
+					fs: createRemoteFileSystem(resolvedSsh.remote),
+				});
 			} catch (err: any) {
 				ctx.ui.notify(`SSH connection/setup failed: ${err.message}`, "error");
 			}
