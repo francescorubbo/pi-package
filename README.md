@@ -45,6 +45,12 @@ Delegates tool operations (read, write, edit, bash) to a remote machine via SSH.
 - Advertises the remote working directory in the system prompt and publishes it on pi's event bus (`remote-cwd.ts`) so `strip-cwd-prefix.ts` can remove redundant `cd` prefixes. It mutates the structured system-prompt options rather than returning a whole prompt, so guidelines added by other extensions are preserved.
 
 
+## Extension Load Order
+
+Pi runs `tool_call` handlers in extension load order (the order in `pi.extensions`), passing the same mutable event to each, and stops at the first handler that blocks. Handlers that rewrite a command (`strip-cwd-prefix`, `pi-uv`) must therefore load **before** the one that gates it (`block-shell-commands`). Otherwise the blocker inspects the raw command the model emitted, not the command that actually runs, and prompts for tokens that are rewritten away — e.g. a redundant `cd <cwd>` that `strip-cwd-prefix` would have removed, or a `python` that `pi-uv` would have turned into `uv run python`.
+
+The rewriters themselves commute (each edits disjoint parts of the command), so their relative order is not significant; the pure syntactic normalization (`strip-cwd-prefix`) is listed first for clarity. The blocker is deliberately listed last. Keep new command-rewriting extensions above it.
+
 ## Prompt Guideline Ordering
 
 Pi diffs the generated system-prompt sections against what the model already has and patches only the sections that change. All `promptGuidelines` land in the single `<rules>` section, so the order in which extensions add them affects the rendered text: the same set in a different order is still a cache miss.

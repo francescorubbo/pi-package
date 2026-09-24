@@ -5,10 +5,10 @@
   "type": "module",
   "pi": {
     "extensions": [
-      "./extensions/block-shell-commands.ts",
+      "./extensions/strip-cwd-prefix.ts",
       "./extensions/pi-uv.ts",
       "./extensions/ssh.ts",
-      "./extensions/strip-cwd-prefix.ts"
+      "./extensions/block-shell-commands.ts"
     ]
   },
   "scripts": {
