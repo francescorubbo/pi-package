@@ -17,8 +17,10 @@
     "prepare": "husky || true"
   },
   "dependencies": {
-    "shell-quote": "^1.10.0",
-    "typebox": "latest"
+    "shell-quote": "^1.10.0"
+  },
+  "peerDependencies": {
+    "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "latest",
