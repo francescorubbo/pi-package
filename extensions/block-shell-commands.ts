@@ -1,7 +1,16 @@
-import { ExtensionAPI, ExtensionContext, isToolCallEventType, CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import {
+    CONFIG_DIR_NAME,
+    type ExtensionAPI,
+    type ExtensionContext,
+    getAgentDir,
+    getSelectListTheme,
+    isToolCallEventType,
+} from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { extractCommands } from "./shell-command-parser.js";
+import { DECISION_LABELS, toDecision } from "./shell-command-policy.js";
+import { ShellCommandApprovalDialog } from "./shell-command-dialog.js";
 
 class BlockShellCommands {
     private projectAllowlist: Set<string> = new Set();
@@ -46,6 +55,28 @@ class BlockShellCommands {
         }
     }
 
+    /**
+     * Asks the user what to do with a blocked command. Uses the custom
+     * scrollable dialog in the TUI and the built-in selector elsewhere.
+     * Any dismissal (Escape, aborted dialog, no UI) resolves to "block".
+     */
+    private async askDecision(command: string, cmdToken: string, ctx: ExtensionContext): Promise<string | undefined> {
+        if (ctx.mode === "tui") {
+            return await ctx.ui.custom<string | undefined>((tui, theme, _kb, done) =>
+                new ShellCommandApprovalDialog(tui, theme, getSelectListTheme(), command, cmdToken, done)
+            );
+        }
+
+        if (!ctx.hasUI) {
+            return undefined;
+        }
+
+        return await ctx.ui.select(
+            `Shell command blocked: "${command}"\nUnauthorized executable found: "${cmdToken}"\nAllow once or add to allowlist?`,
+            [...DECISION_LABELS],
+        );
+    }
+
     public async shouldBlock(command: string, ctx: ExtensionContext): Promise<{ block: boolean; reason?: string }> {
         const commandsToVerify = extractCommands(command);
 
@@ -54,18 +85,15 @@ class BlockShellCommands {
                 continue;
             }
 
-            const response = await ctx.ui.select(
-                `Shell command blocked: "${command}"\nUnauthorized executable found: "${cmdToken}"\nAllow once or add to allowlist?`,
-                ["Allow once", "Always allow (Project)", "Always allow (Global)", "Block"]
-            );
+            const decision = toDecision(await this.askDecision(command, cmdToken, ctx));
 
-            if (response === "Always allow (Project)") {
+            if (decision === "allow-project") {
                 this.projectAllowlist.add(cmdToken);
                 this.saveFile(this.projectAllowlistFile, this.projectAllowlist);
-            } else if (response === "Always allow (Global)") {
+            } else if (decision === "allow-global") {
                 this.globalAllowlist.add(cmdToken);
                 this.saveFile(this.globalAllowlistFile, this.globalAllowlist);
-            } else if (response === "Allow once") {
+            } else if (decision === "allow-once") {
                 continue;
             } else {
                 return { block: true, reason: `Command "${cmdToken}" blocked by user` };
