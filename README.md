@@ -10,10 +10,16 @@ Prevents the agent from executing shell commands by default. When a command is a
 - It extracts the executable from each command, ignoring redirection targets, heredoc bodies, variable assignments, comments, and no-op builtins such as `true`.
 - If the command is not allowed, it prompts the user to:
   - **Allow once**: Permits the current execution.
-  - **Always allow**: Adds the command's first token (e.g., `uv` for `uv sync`) to the allowlist.
+  - **Always allow (Project)**: Adds the command's first token (e.g., `uv` for `uv sync`) to the project allowlist (`.pi/shell-allowlist.json`).
+  - **Always allow (Global)**: Adds it to the global allowlist (`~/.pi/agent/shell-allowlist.json`).
   - **Block**: Rejects the execution.
 
-The shell parsing logic lives in `extensions/shell-command-parser.ts` and is covered by unit tests.
+In the terminal UI the prompt is a custom dialog instead of the built-in selector, so long commands cannot hide the decision options:
+- The command is wrapped and shown in a viewport capped to the terminal height; the options and key hints are rendered below it and always stay visible.
+- Scroll the command with `PgUp`/`PgDn` (or `Ctrl+U`/`Ctrl+D`, `Home`/`End`, mouse wheel) and pick an option with `↑`/`↓` + `Enter` (`Esc` blocks). A `lines x-y of n` indicator shows the current position.
+- Other UI modes (RPC) fall back to `ctx.ui.select()`, and any dismissed dialog blocks the command.
+
+The shell parsing logic lives in `extensions/shell-command-parser.ts`, the decision model in `extensions/shell-command-policy.ts`, and both are covered by unit tests together with the dialog layout (`test/block-shell-commands.test.ts`).
 
 ### UV Python Runner (`pi-uv.ts`)
 Routes Python-related commands (e.g., `python`, `pytest`, `ruff`) through `uv run`.
@@ -85,6 +91,8 @@ Unit tests use [Vitest](https://vitest.dev/):
 ```bash
 npm test
 ```
+
+`vitest.config.ts` aliases `@earendil-works/pi-tui` the same way `tsconfig.json` maps it, because pi provides that module to extensions at runtime while it is only installed as a nested dependency of `@earendil-works/pi-coding-agent` in this repo. This lets tests render extension UI components.
 
 ### Project Structure
 - `extensions/`: Contains the TypeScript source for all extensions.
