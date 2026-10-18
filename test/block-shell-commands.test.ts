@@ -1,12 +1,21 @@
-import { beforeAll, describe, expect, it } from "vitest";
-import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import type { TUI } from "@earendil-works/pi-tui";
-import { ShellCommandApprovalDialog } from "../extensions/block-shell-commands.js";
+import { describe, expect, it } from "vitest";
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { SelectListTheme, TUI } from "@earendil-works/pi-tui";
+import { ShellCommandApprovalDialog } from "../extensions/shell-command-dialog.js";
 
 const ANSI = /\x1b\[[0-9;]*m/g;
 const stripAnsi = (text: string): string => text.replace(ANSI, "");
 const PAGE_DOWN = "\x1b[6~";
 const PAGE_UP = "\x1b[5~";
+
+const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as unknown as Theme;
+const selectListTheme: SelectListTheme = {
+    selectedPrefix: (text) => text,
+    selectedText: (text) => text,
+    description: (text) => text,
+    scrollInfo: (text) => text,
+    noMatch: (text) => text,
+};
 
 function createDialog(command: string, executable: string, rows = 24) {
     const renders: number[] = [];
@@ -15,8 +24,9 @@ function createDialog(command: string, executable: string, rows = 24) {
         terminal: { rows },
         requestRender: () => renders.push(rows),
     } as unknown as TUI;
-    const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as unknown as Theme;
-    const dialog = new ShellCommandApprovalDialog(tui, theme, command, executable, (value) => results.push(value));
+    const dialog = new ShellCommandApprovalDialog(tui, theme, selectListTheme, command, executable, (value) =>
+        results.push(value)
+    );
     const render = (width = 80): string[] => dialog.render(width).map(stripAnsi);
     return { dialog, render, results, requestRenderCount: () => renders.length };
 }
@@ -25,10 +35,6 @@ const longCommand = `uv run ${Array.from({ length: 300 }, (_, i) => `--flag${i}=
 const lastToken = "value299";
 
 describe("ShellCommandApprovalDialog", () => {
-    beforeAll(() => {
-        initTheme("dark");
-    });
-
     it("keeps every decision option visible for a command longer than the terminal", () => {
         const { render } = createDialog(longCommand, "uv");
         const output = render().join("\n");

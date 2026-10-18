@@ -19,7 +19,7 @@ In the terminal UI the prompt is a custom dialog instead of the built-in selecto
 - Scroll the command with `PgUp`/`PgDn` (or `Ctrl+U`/`Ctrl+D`, `Home`/`End`, mouse wheel) and pick an option with `↑`/`↓` + `Enter` (`Esc` blocks). A `lines x-y of n` indicator shows the current position.
 - Other UI modes (RPC) fall back to `ctx.ui.select()`, and any dismissed dialog blocks the command.
 
-The shell parsing logic lives in `extensions/shell-command-parser.ts`, the decision model in `extensions/shell-command-policy.ts`, and both are covered by unit tests together with the dialog layout (`test/block-shell-commands.test.ts`).
+The shell parsing logic lives in `extensions/shell-command-parser.ts`, the decision model in `extensions/shell-command-policy.ts`, and the dialog in `extensions/shell-command-dialog.ts`. All three are covered by unit tests, including the dialog layout and scrolling (`test/block-shell-commands.test.ts`).
 
 ### UV Python Runner (`pi-uv.ts`)
 Routes Python-related commands (e.g., `python`, `pytest`, `ruff`) through `uv run`.
@@ -93,6 +93,8 @@ npm test
 ```
 
 `vitest.config.ts` aliases `@earendil-works/pi-tui` the same way `tsconfig.json` maps it, because pi provides that module to extensions at runtime while it is only installed as a nested dependency of `@earendil-works/pi-coding-agent` in this repo. This lets tests render extension UI components.
+
+UI components that are tested live in their own module and import only `@earendil-works/pi-tui` (plus type-only pi imports), so tests never load the pi runtime. CI and the supported runtime are Node 22+, which pi requires.
 
 ### Project Structure
 - `extensions/`: Contains the TypeScript source for all extensions.

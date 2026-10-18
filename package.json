@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Custom extensions for pi-coding-agent",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "pi": {
     "extensions": [
       "./extensions/strip-cwd-prefix.ts",
