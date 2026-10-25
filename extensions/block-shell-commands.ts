@@ -11,6 +11,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { extractCommands } from "./shell-command-parser.js";
 import { DECISION_LABELS, toDecision } from "./shell-command-policy.js";
 import { ShellCommandApprovalDialog } from "./shell-command-dialog.js";
+import { REMOTE_CWD_CHANNEL, type RemoteCwdEvent } from "./remote-cwd.js";
+import { stripRedundantCwdPrefix } from "./strip-cwd-prefix-core.js";
 
 class BlockShellCommands {
     private projectAllowlist: Set<string> = new Set();
@@ -118,13 +120,34 @@ export default function (pi: ExtensionAPI) {
     // Initialize lazily on session_start to get the correct CWD
     let blocker: BlockShellCommands;
 
+    // In SSH sessions bash commands run in a remote directory while ctx.cwd is
+    // the local one. Track the remote cwd so a redundant `cd <remote> &&`
+    // prefix is not shown to the user (or blocked) as part of the command.
+    // This must not depend on the strip-cwd-prefix extension running first: pi
+    // runs tool_call handlers in extension load order, and load order can vary
+    // when extensions come from packages, project, or global directories.
+    let remoteCwd: string | undefined;
+    pi.events.on(REMOTE_CWD_CHANNEL, (data) => {
+        const event = data as Partial<RemoteCwdEvent> | undefined;
+        if (event && typeof event.cwd === "string" && event.cwd !== "") {
+            remoteCwd = event.cwd;
+        }
+    });
+
     pi.on("session_start", (event, ctx) => {
         blocker = new BlockShellCommands(ctx.cwd);
     });
 
     pi.on("tool_call", async (event, ctx) => {
         if (isToolCallEventType("bash", event)) {
-            const command = (event as any).input.command;
+            const rawCommand = event.input.command;
+            const command =
+                (typeof rawCommand === "string"
+                    ? stripRedundantCwdPrefix(
+                          rawCommand,
+                          remoteCwd ? [ctx.cwd, remoteCwd] : ctx.cwd,
+                      )
+                    : null) ?? rawCommand;
             const result = await blocker.shouldBlock(command, ctx);
             if (result.block) {
                 return result as any;
