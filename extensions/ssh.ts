@@ -17,10 +17,10 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	type BashOperations,
-	createBashTool,
-	createEditTool,
-	createReadTool,
-	createWriteTool,
+	createBashToolDefinition,
+	createEditToolDefinition,
+	createReadToolDefinition,
+	createWriteToolDefinition,
 	type EditOperations,
 	type ReadOperations,
 	type WriteOperations,
@@ -29,6 +29,9 @@ import { REMOTE_CWD_CHANNEL } from "./remote-cwd.js";
 import { REMOTE_FS_CHANNEL, type RemoteFileSystem } from "./remote-fs.js";
 import { addPromptGuideline } from "./prompt-guidelines.js";
 import { prependRemotePath } from "./ssh-remote-env.js";
+import { stripRedundantCwdPrefix } from "./strip-cwd-prefix-core.js";
+
+type SshTarget = { remote: string; remoteCwd: string };
 
 function sshSpawn(remote: string, args: string[], options?: { input?: Buffer }) {
 	// Non-interactive SSH does not source the user's profile, so user-local
@@ -81,7 +84,7 @@ function createRemoteFileSystem(remote: string): RemoteFileSystem {
 }
 
 /** Resolve the `--ssh` flag into a remote target and an absolute remote cwd. */
-async function resolveSshTarget(arg: string): Promise<{ remote: string; remoteCwd: string }> {
+async function resolveSshTarget(arg: string): Promise<SshTarget> {
 	const colon = arg.indexOf(":");
 	if (colon !== -1) {
 		const remote = arg.slice(0, colon);
@@ -94,6 +97,76 @@ async function resolveSshTarget(arg: string): Promise<{ remote: string; remoteCw
 	const remote = arg;
 	const remoteCwd = (await sshExec(remote, "pwd")).toString().trim();
 	return { remote, remoteCwd };
+}
+
+/** Arguments that hold a file path in the built-in file tools. */
+const DISPLAY_PATH_KEYS = ["path", "file_path"] as const;
+
+/**
+ * Maps the path-like arguments of a tool call into the remote tree for display.
+ * The tools themselves already do this before executing; this keeps the TUI
+ * transcript (and its hyperlinks) showing the remote target too.
+ */
+function mapDisplayArgs(args: unknown, toRemote: (p: string) => string): unknown {
+	if (!args || typeof args !== "object") return args;
+	const record = args as Record<string, unknown>;
+	let changed = false;
+	const mapped: Record<string, unknown> = { ...record };
+	for (const key of DISPLAY_PATH_KEYS) {
+		const value = record[key];
+		if (typeof value === "string" && value.length > 0) {
+			const remote = toRemote(value);
+			if (remote !== value) {
+				mapped[key] = remote;
+				changed = true;
+			}
+		}
+	}
+	return changed ? mapped : args;
+}
+
+/**
+ * Wraps a tool's renderers so the TUI uses the remote cwd and remote paths
+ * while an SSH session is active. Renderers receive the session cwd (the
+ * local directory) from pi, which would otherwise make remote files appear
+ * as local ones in the transcript.
+ */
+function withRemotePathDisplay<T extends { renderCall?: any; renderResult?: any }>(
+	tool: T,
+	getSsh: () => SshTarget | null,
+	localCwd: string,
+): T {
+	const { renderCall, renderResult } = tool;
+	if (!renderCall && !renderResult) return tool;
+
+	const remap = (args: unknown, context: any, ssh: SshTarget) => {
+		const mappedArgs = mapDisplayArgs(args, createRemotePathMapper(ssh.remoteCwd, localCwd));
+		return { args: mappedArgs, context: { ...context, cwd: ssh.remoteCwd, args: mappedArgs } };
+	};
+
+	return {
+		...tool,
+		...(renderCall
+			? {
+					renderCall: (args: unknown, theme: any, context: any) => {
+						const ssh = getSsh();
+						if (!ssh) return renderCall(args, theme, context);
+						const display = remap(args, context, ssh);
+						return renderCall(display.args, theme, display.context);
+					},
+				}
+			: {}),
+		...(renderResult
+			? {
+					renderResult: (result: unknown, options: any, theme: any, context: any) => {
+						const ssh = getSsh();
+						if (!ssh) return renderResult(result, options, theme, context);
+						const display = remap(context.args, context, ssh);
+						return renderResult(result, options, theme, display.context);
+					},
+				}
+			: {}),
+	} as T;
 }
 
 function createRemotePathMapper(remoteCwd: string, localCwd: string) {
@@ -153,7 +226,14 @@ function createRemoteBashOps(remote: string, remoteCwd: string, localCwd: string
 	return {
 		exec: (command, cwd, { onData, signal, timeout }) =>
 			new Promise((resolve, reject) => {
-				const cmd = `cd ${JSON.stringify(toRemote(cwd))} && ${command}`;
+				const remoteTarget = toRemote(cwd);
+				// The strip-cwd-prefix extension normally removes this before the call
+				// reaches us, but do it here as well: the command that actually runs on
+				// the remote must never depend on extension load order or on whether that
+				// extension is installed at all.
+				const cleaned =
+					stripRedundantCwdPrefix(command, [remoteTarget, remoteCwd, localCwd]) ?? command;
+				const cmd = `cd ${JSON.stringify(remoteTarget)} && ${cleaned}`;
 				const child = sshSpawn(remote, [cmd]);
 				let timedOut = false;
 				const timer = timeout
@@ -185,16 +265,23 @@ export default function (pi: ExtensionAPI) {
 	pi.registerFlag("ssh", { description: "SSH remote: user@host or user@host:/path", type: "string" });
 
 	const localCwd = process.cwd();
-	const localRead = createReadTool(localCwd);
-	const localWrite = createWriteTool(localCwd);
-	const localEdit = createEditTool(localCwd);
-	const localBash = createBashTool(localCwd);
+	const localRead = createReadToolDefinition(localCwd);
+	const localWrite = createWriteToolDefinition(localCwd);
+	const localEdit = createEditToolDefinition(localCwd);
+	const localBash = createBashToolDefinition(localCwd);
 
 	// Resolved lazily on session_start (CLI flags not available during factory)
-	let resolvedSsh: { remote: string; remoteCwd: string } | null = null;
+	let resolvedSsh: SshTarget | null = null;
 	let autocompleteRegistered = false;
 
 	const getSsh = () => resolvedSsh;
+
+	// The registered definitions carry the renderers, so wrap them once here.
+	// Every renderer consults getSsh(), which is populated on session_start.
+	const displayRead = withRemotePathDisplay(localRead, getSsh, localCwd);
+	const displayWrite = withRemotePathDisplay(localWrite, getSsh, localCwd);
+	const displayEdit = withRemotePathDisplay(localEdit, getSsh, localCwd);
+	const displayBash = withRemotePathDisplay(localBash, getSsh, localCwd);
 
 	pi.on("session_start", async (_event, ctx) => {
 		// Resolve SSH config now that CLI flags are available
@@ -282,58 +369,58 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
-		...localRead,
+		...displayRead,
 		async execute(id, params, signal, onUpdate, _ctx) {
 			const ssh = getSsh();
 			if (ssh) {
-				const tool = createReadTool(localCwd, {
+				const tool = createReadToolDefinition(localCwd, {
 					operations: createRemoteReadOps(ssh.remote, ssh.remoteCwd, localCwd),
 				});
-				return tool.execute(id, params, signal, onUpdate);
+				return tool.execute(id, params, signal, onUpdate, _ctx);
 			}
-			return localRead.execute(id, params, signal, onUpdate);
+			return localRead.execute(id, params, signal, onUpdate, _ctx);
 		},
 	});
 
 	pi.registerTool({
-		...localWrite,
+		...displayWrite,
 		async execute(id, params, signal, onUpdate, _ctx) {
 			const ssh = getSsh();
 			if (ssh) {
-				const tool = createWriteTool(localCwd, {
+				const tool = createWriteToolDefinition(localCwd, {
 					operations: createRemoteWriteOps(ssh.remote, ssh.remoteCwd, localCwd),
 				});
-				return tool.execute(id, params, signal, onUpdate);
+				return tool.execute(id, params, signal, onUpdate, _ctx);
 			}
-			return localWrite.execute(id, params, signal, onUpdate);
+			return localWrite.execute(id, params, signal, onUpdate, _ctx);
 		},
 	});
 
 	pi.registerTool({
-		...localEdit,
+		...displayEdit,
 		async execute(id, params, signal, onUpdate, _ctx) {
 			const ssh = getSsh();
 			if (ssh) {
-				const tool = createEditTool(localCwd, {
+				const tool = createEditToolDefinition(localCwd, {
 					operations: createRemoteEditOps(ssh.remote, ssh.remoteCwd, localCwd),
 				});
-				return tool.execute(id, params, signal, onUpdate);
+				return tool.execute(id, params, signal, onUpdate, _ctx);
 			}
-			return localEdit.execute(id, params, signal, onUpdate);
+			return localEdit.execute(id, params, signal, onUpdate, _ctx);
 		},
 	});
 
 	pi.registerTool({
-		...localBash,
+		...displayBash,
 		async execute(id, params, signal, onUpdate, _ctx) {
 			const ssh = getSsh();
 			if (ssh) {
-				const tool = createBashTool(localCwd, {
+				const tool = createBashToolDefinition(localCwd, {
 					operations: createRemoteBashOps(ssh.remote, ssh.remoteCwd, localCwd),
 				});
-				return tool.execute(id, params, signal, onUpdate);
+				return tool.execute(id, params, signal, onUpdate, undefined as any);
 			}
-			return localBash.execute(id, params, signal, onUpdate);
+			return localBash.execute(id, params, signal, onUpdate, undefined as any);
 		},
 	});
 

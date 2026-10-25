@@ -37,7 +37,7 @@ Some models prepend `cd <absolute cwd> &&` to every bash command even though com
 - **Cleanup**: before each bash command runs, a leading no-op `cd <cwd>` prefix is stripped. Only prefixes that resolve back to a valid working directory are removed, so intentional `cd` into another directory is preserved. Handles quoting, `cd --`, chained `cd`s, and `;`/newline separators.
 - **Prompt**: a system-prompt guideline tells the model that bash already starts in the working directory.
 
-In SSH sessions the session cwd (the local path) differs from the directory commands actually execute in. The ssh extension publishes its remote cwd on pi's event bus (`remote-cwd.ts`), and this extension accepts both directories, so `cd <remote-project-root> && ...` is stripped as well. The rewriting logic lives in `extensions/strip-cwd-prefix-core.ts` and is covered by unit tests.
+In SSH sessions the session cwd (the local path) differs from the directory commands actually execute in. The ssh extension publishes its remote cwd on pi's event bus (`remote-cwd.ts`), and this extension accepts both directories, so `cd <remote-project-root> && ...` is stripped as well. The blocker applies the same normalization before inspecting a command, and the ssh extension repeats it before execution, so a redundant `cd` is never gated or run even if extension load order differs. The rewriting logic lives in `extensions/strip-cwd-prefix-core.ts` and is covered by unit tests.
 
 ### SSH Remote Execution (`ssh.ts`)
 Delegates tool operations (read, write, edit, bash) to a remote machine via SSH.
@@ -49,13 +49,16 @@ Delegates tool operations (read, write, edit, bash) to a remote machine via SSH.
 - Prepends the conventional user-local bin directory (`$HOME/.local/bin`) to the remote `PATH` on every operation. Non-interactive SSH does not source the user's profile, so tools installed there (notably `uv`) would otherwise be missing and every command would need an `export PATH=...` prefix.
 - Publishes a remote filesystem probe (`remote-fs.ts`) on pi's event bus so `pi-uv.ts` can detect `uv.lock` on the remote host instead of the local checkout.
 - Advertises the remote working directory in the system prompt and publishes it on pi's event bus (`remote-cwd.ts`) so `strip-cwd-prefix.ts` can remove redundant `cd` prefixes. It mutates the structured system-prompt options rather than returning a whole prompt, so guidelines added by other extensions are preserved.
+- Shows the remote cwd and remote file paths in the TUI transcript instead of the local session paths, and strips a redundant `cd <remote-cwd> &&` once more immediately before remote execution as a load-order-independent fallback.
 
 
 ## Extension Load Order
 
-Pi runs `tool_call` handlers in extension load order (the order in `pi.extensions`), passing the same mutable event to each, and stops at the first handler that blocks. Handlers that rewrite a command (`strip-cwd-prefix`, `pi-uv`) must therefore load **before** the one that gates it (`block-shell-commands`). Otherwise the blocker inspects the raw command the model emitted, not the command that actually runs, and prompts for tokens that are rewritten away — e.g. a redundant `cd <cwd>` that `strip-cwd-prefix` would have removed, or a `python` that `pi-uv` would have turned into `uv run python`.
+Pi runs `tool_call` handlers in extension load order (the order in `pi.extensions`), passing the same mutable event to each, and stops at the first handler that blocks. Handlers that rewrite a command (`strip-cwd-prefix`, `pi-uv`) should load **before** the one that gates it (`block-shell-commands`), otherwise the blocker inspects the raw command the model emitted instead of the command that actually runs.
 
-The rewriters themselves commute (each edits disjoint parts of the command), so their relative order is not significant; the pure syntactic normalization (`strip-cwd-prefix`) is listed first for clarity. The blocker is deliberately listed last. Keep new command-rewriting extensions above it.
+The blocker normalizes a redundant `cd <cwd>` prefix itself before asking for approval, so that particular rewrite is independent of load order. Rewrites that need other extensions' logic still need to run first: keep new command-rewriting extensions above the blocker so it never prompts for a `python` that `pi-uv` would have turned into `uv run python`.
+
+The rewriters themselves commute (each edits disjoint parts of the command), so their relative order is not significant; the pure syntactic normalization (`strip-cwd-prefix`) is listed first for clarity. The blocker is deliberately listed last.
 
 ## Prompt Guideline Ordering
 
